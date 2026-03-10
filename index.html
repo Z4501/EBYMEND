@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>eBay Order Reconciliation & P&L</title>
+  <title>Marketplace Order Reconciliation & P&L</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="page">
     <header class="hero">
-      <h1>eBay Order Reconciliation &amp; P&amp;L Viewer</h1>
+      <h1>Marketplace Order Reconciliation &amp; P&amp;L Viewer</h1>
       <p>
-        Upload Statement Excel, eBay Orders CSV, and ShipStation CSV.
+        Upload Statement Excel, eBay Orders CSV, Amazon Transactions XLSX, and ShipStation CSV.
         The statement drives which orders appear.
       </p>
     </header>
@@ -25,6 +25,11 @@
       <div class="upload-card">
         <label for="ordersFile">eBay Orders CSV</label>
         <input type="file" id="ordersFile" accept=".csv" />
+      </div>
+
+      <div class="upload-card">
+        <label for="amazonFile">Amazon Transactions (.xlsx / .xls / .csv)</label>
+        <input type="file" id="amazonFile" accept=".xlsx,.xls,.csv" />
       </div>
 
       <div class="upload-card">
@@ -54,6 +59,7 @@
         <table id="resultTable">
           <thead>
             <tr>
+              <th>Marketplace</th>
               <th>Order #</th>
               <th>Date</th>
               <th>Invoice</th>
@@ -64,7 +70,7 @@
               <th>Tax</th>
               <th>Ship Cost</th>
               <th>Parts Cost</th>
-              <th>Est. eBay Fee</th>
+              <th>Fee</th>
               <th>Profit</th>
               <th>Margin</th>
               <th>Status</th>
