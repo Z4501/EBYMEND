@@ -119,7 +119,11 @@ function findStatementHeaderRow(rows) {
 
     const hasDate = row.some(x => x === "date" || x.includes("date"));
     const hasInvoice = row.some(x => x === "invoice" || x.includes("invoice"));
-    const hasPO = row.some(x => x.includes("cust.p.o.") || x.includes("custpo") || x.includes("customerpo"));
+    const hasPO = row.some(x =>
+      x.includes("cust.p.o.") ||
+      x.includes("custpo") ||
+      x.includes("customerpo")
+    );
     const hasOrigInvAmount = row.some(x =>
       x.includes("originvamount") ||
       x.includes("orig.inv.amount") ||
@@ -161,7 +165,6 @@ function buildStatementMapFromRows(rows) {
       getFirstExisting(r, ["Cust. P.O.", "Cust. PO", "Customer PO"])
     );
 
-    // only keep eBay-style order numbers
     if (!/^\d{2}-\d{5}-\d{5}$/.test(orderId)) {
       continue;
     }
@@ -213,9 +216,8 @@ async function processFiles() {
     state.statementMap = new Map();
     state.mergedRows = [];
 
-    // Statement Excel
     if (statementFile.name.toLowerCase().endsWith(".csv")) {
-      const statementRecords = await parseCsvFile(statementFile, ["Date", "Invoice", "Orig. Amount"]);
+      const statementRecords = await parseCsvFile(statementFile, ["Date", "Invoice"]);
       const csvRows = [
         Object.keys(statementRecords[0] || {}),
         ...statementRecords.map(obj => Object.values(obj))
@@ -226,13 +228,11 @@ async function processFiles() {
       state.statementMap = buildStatementMapFromRows(statementRows);
     }
 
-    // eBay CSV
     if (ordersFile) {
       const orderRecords = await parseCsvFile(ordersFile, ["Order Number", "Custom Label"]);
       state.ordersMap = buildOrdersMap(orderRecords);
     }
 
-    // ShipStation CSV
     if (shipFile) {
       const shipRecords = await parseCsvFile(shipFile, ["Order #", "Shipping Cost"]);
       state.shipMap = buildShipMap(shipRecords);
@@ -256,11 +256,14 @@ function buildOrdersMap(records) {
     const orderId = normalizeOrderId(getFirstExisting(r, ["Order Number"]));
     if (!orderId) continue;
 
-    const sold = num(getFirstExisting(r, ["Sold For"]));
+    const qty = Math.max(1, num(getFirstExisting(r, ["Quantity", "Qty"])));
+    const soldFor = num(getFirstExisting(r, ["Sold For"]));
     const buyerShip = num(getFirstExisting(r, ["Shipping And Handling"]));
     const tax = num(getFirstExisting(r, ["eBay Collected Tax", "eBay Collect And Remit Tax", "Sales Tax"]));
     const sku = String(getFirstExisting(r, ["Custom Label"])).trim();
     const soldDate = String(getFirstExisting(r, ["Sale Date"])).trim();
+
+    const lineSold = qty > 1 ? soldFor * qty : soldFor;
 
     if (!map.has(orderId)) {
       map.set(orderId, {
@@ -269,14 +272,17 @@ function buildOrdersMap(records) {
         sold: 0,
         buyerShip: 0,
         tax: 0,
+        qty: 0,
         skus: new Set()
       });
     }
 
     const row = map.get(orderId);
-    row.sold += sold;
+    row.sold += lineSold;
     row.buyerShip += buyerShip;
     row.tax += tax;
+    row.qty += qty;
+
     if (sku) row.skus.add(sku);
   }
 
@@ -303,6 +309,7 @@ function estimateEbayFee(sold, buyerShip, tax) {
   const feeBase = sold + buyerShip + tax;
   const rate = 0.136;
   const orderFee = (sold + buyerShip) <= 10 ? 0.30 : 0.40;
+
   return (feeBase * rate) + orderFee;
 }
 
@@ -317,6 +324,7 @@ function buildMergedRowsFromStatementOnly() {
     const buyerShip = ebay ? ebay.buyerShip : 0;
     const tax = ebay ? ebay.tax : 0;
     const soldDate = ebay ? ebay.soldDate : "";
+    const qty = ebay ? ebay.qty : 0;
     const skus = ebay ? [...ebay.skus].join(" | ") : "";
 
     rows.push({
@@ -325,6 +333,7 @@ function buildMergedRowsFromStatementOnly() {
       invoice: statementRow.invoice || "",
       soldDate,
       skus,
+      qty,
       sold,
       buyerShip,
       tax,
@@ -444,6 +453,7 @@ function renderTable() {
       <td>${row.statementDate || row.soldDate || ""}</td>
       <td>${row.invoice || '<span class="small">—</span>'}</td>
       <td>${row.skus || '<span class="small">—</span>'}</td>
+      <td>${row.qty || ""}</td>
       <td>${money(row.sold)}</td>
       <td>${money(row.buyerShip)}</td>
       <td>${money(row.tax)}</td>
@@ -498,6 +508,7 @@ function exportCsv() {
     "Statement Date": r.statementDate,
     "Invoice": r.invoice,
     "SKU(s)": r.skus,
+    "Qty": r.qty,
     "Sold": r.sold.toFixed(2),
     "Buyer Shipping": r.buyerShip.toFixed(2),
     "Tax": r.tax.toFixed(2),
