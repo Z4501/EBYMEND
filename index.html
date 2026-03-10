@@ -9,16 +9,16 @@
 <body>
   <div class="page">
     <header class="hero">
-      <h1>eBay Order Reconciliation & P&amp;L Viewer</h1>
+      <h1>eBay Order Reconciliation &amp; P&amp;L Viewer</h1>
       <p>
         Upload Statement Excel, eBay Orders CSV, and ShipStation CSV.
-        The statement drives the report month.
+        The statement drives which orders appear.
       </p>
     </header>
 
     <section class="panel uploads">
       <div class="upload-card">
-        <label for="statementFile">Statement Excel (.xlsx)</label>
+        <label for="statementFile">Statement Excel (.xlsx / .xls / .csv)</label>
         <input type="file" id="statementFile" accept=".xlsx,.xls,.csv" />
       </div>
 
@@ -58,6 +58,7 @@
               <th>Date</th>
               <th>Invoice</th>
               <th>SKU(s)</th>
+              <th>Qty</th>
               <th>Sold</th>
               <th>Buyer Ship</th>
               <th>Tax</th>
