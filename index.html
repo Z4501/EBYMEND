@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>eBay P&L Viewer</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+<h1>eBay Order P&L Viewer</h1>
+
+<div class="upload">
+<h3>Upload eBay Orders CSV</h3>
+<input type="file" id="ordersFile">
+</div>
+
+<div class="upload">
+<h3>Upload ShipStation CSV</h3>
+<input type="file" id="shipFile">
+</div>
+
+<div class="upload">
+<h3>Upload Vendor Statement (PDF)</h3>
+<input type="file" id="vendorFile">
+</div>
+
+<button onclick="processFiles()">Process Files</button>
+
+<hr>
+
+<h2>Summary</h2>
+
+<div id="summary"></div>
+
+<h2>Orders</h2>
+
+<table id="resultTable">
+<thead>
+<tr>
+<th>Order</th>
+<th>SKU</th>
+<th>Sale</th>
+<th>Buyer Ship</th>
+<th>Tax</th>
+<th>Vendor Cost</th>
+<th>Ship Cost</th>
+<th>Est Fee</th>
+<th>Profit</th>
+<th>Margin</th>
+</tr>
+</thead>
+
+<tbody></tbody>
+
+</table>
+
+<script src="script.js"></script>
+
+</body>
+</html>
