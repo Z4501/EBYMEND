@@ -112,15 +112,24 @@ function parseExcelFile(file) {
 }
 
 function findStatementHeaderRow(rows) {
-  const candidates = [
-    ["Date", "Invoice", "Cust. P.O.", "Orig. Amount"],
-    ["Date", "Invoice", "Cust. PO", "Orig. Amount"],
-    ["Date", "Invoice", "Customer PO", "Orig. Amount"]
-  ];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i].map(x =>
+      String(x || "").toLowerCase().replace(/\s+/g, "")
+    );
 
-  for (const candidate of candidates) {
-    const idx = findHeaderRow(rows, candidate);
-    if (idx !== -1) return idx;
+    const hasDate = row.some(x => x === "date" || x.includes("date"));
+    const hasInvoice = row.some(x => x === "invoice" || x.includes("invoice"));
+    const hasPO = row.some(x => x.includes("cust.p.o.") || x.includes("custpo") || x.includes("customerpo"));
+    const hasOrigInvAmount = row.some(x =>
+      x.includes("originvamount") ||
+      x.includes("orig.inv.amount") ||
+      x.includes("origamount") ||
+      x.includes("amount")
+    );
+
+    if (hasDate && hasInvoice && hasPO && hasOrigInvAmount) {
+      return i;
+    }
   }
 
   return -1;
@@ -131,7 +140,7 @@ function buildStatementMapFromRows(rows) {
   const headerIndex = findStatementHeaderRow(rows);
 
   if (headerIndex === -1) {
-    throw new Error("Could not find statement headers like Date / Invoice / Cust. P.O. / Orig. Amount");
+    throw new Error("Could not find statement headers.");
   }
 
   const headers = rows[headerIndex].map(h => String(h || "").trim());
@@ -152,13 +161,22 @@ function buildStatementMapFromRows(rows) {
       getFirstExisting(r, ["Cust. P.O.", "Cust. PO", "Customer PO"])
     );
 
+    // only keep eBay-style order numbers
     if (!/^\d{2}-\d{5}-\d{5}$/.test(orderId)) {
       continue;
     }
 
     const invoice = String(getFirstExisting(r, ["Invoice"])).trim();
     const date = String(getFirstExisting(r, ["Date"])).trim();
-    const amount = num(getFirstExisting(r, ["Orig. Amount", "Original Amount", "Amount"]));
+
+    const amount = num(
+      getFirstExisting(r, [
+        "Orig. Inv. Amount",
+        "Orig. Amount",
+        "Original Amount",
+        "Amount"
+      ])
+    );
 
     if (!map.has(orderId)) {
       map.set(orderId, {
