@@ -14,8 +14,26 @@ Matching keys:
 - Amazon `Order ID`
 - ShipStation `Order #`
 
-Rules:
-- eBay orders use eBay sales + ShipStation shipping
-- Amazon orders use Amazon Order Payment + Amazon Shipping Services Purchased
-- returns/refunds/reversals are ignored for Amazon in this version
-- shipping cost and parts cost remain editable
+Features:
+- statement-driven month view
+- eBay support
+- Amazon support
+- ShipStation shipping capture
+- statement parts cost capture
+- in-house SKU cost table fallback
+- manual cost overrides
+- CSV export
+
+## SKU cost table
+
+Edit `SKU_COST_RULES` near the top of `script.js`.
+
+Example:
+- FK032946ESK: 6.13
+- WWPOFK032946ESK+: 6.34
+- R2-QS1S-MLLF: 8.00
+
+Logic:
+1. Statement cost wins
+2. If no statement cost, SKU cost rule fills it
+3. Manual edits override both
