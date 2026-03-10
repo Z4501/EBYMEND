@@ -24,7 +24,7 @@ body {
 }
 
 .page {
-  max-width: 1500px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -57,7 +57,7 @@ body {
 
 .uploads {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
 }
 
@@ -108,7 +108,7 @@ body {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -136,7 +136,7 @@ body {
 
 table {
   width: 100%;
-  min-width: 1450px;
+  min-width: 1600px;
   border-collapse: collapse;
 }
 
@@ -205,11 +205,6 @@ tbody tr:hover {
 }
 
 @media (max-width: 1000px) {
-  .uploads,
-  .summary-grid {
-    grid-template-columns: 1fr;
-  }
-
   .controls {
     flex-direction: column;
     align-items: stretch;
