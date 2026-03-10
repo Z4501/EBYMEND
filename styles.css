@@ -136,7 +136,7 @@ body {
 
 table {
   width: 100%;
-  min-width: 1400px;
+  min-width: 1450px;
   border-collapse: collapse;
 }
 
@@ -191,7 +191,7 @@ tbody tr:hover {
 }
 
 .edit-cell {
-  width: 92px;
+  width: 96px;
   padding: 8px;
   border-radius: 8px;
   border: 1px solid var(--line);
