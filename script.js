@@ -1,20 +1,14 @@
-import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
-
 const state = {
   ordersMap: new Map(),
-  altoMap: new Map(),
   shipMap: new Map(),
+  statementMap: new Map(),
   mergedRows: []
 };
 
-const ORDER_ID_REGEX = /\b\d{2}-\d{5}-\d{5}\b/g;
-const MONEY_REGEX = /\$\d{1,3}(?:,\d{3})*\.\d{2}/g;
-
-document.getElementById("processBtn").addEventListener("click", processFiles);
-document.getElementById("exportBtn").addEventListener("click", exportCsv);
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("processBtn").addEventListener("click", processFiles);
+  document.getElementById("exportBtn").addEventListener("click", exportCsv);
+});
 
 function money(value) {
   return `$${(Number(value) || 0).toFixed(2)}`;
@@ -45,7 +39,7 @@ function findHeaderRow(rows, requiredHeaders) {
 
 function getFirstExisting(obj, names) {
   for (const name of names) {
-    if (obj[name] !== undefined && String(obj[name]).trim() !== "") {
+    if (obj[name] !== undefined && obj[name] !== null && String(obj[name]).trim() !== "") {
       return obj[name];
     }
   }
@@ -90,34 +84,147 @@ function parseCsvFile(file, requiredHeaders) {
   });
 }
 
+function parseExcelFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = function(e) {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: "array" });
+
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
+
+        resolve(rows);
+      } catch (err) {
+        reject(err);
+      }
+    };
+
+    reader.onerror = function(err) {
+      reject(err);
+    };
+
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function findStatementHeaderRow(rows) {
+  const candidates = [
+    ["Date", "Invoice", "Cust. P.O.", "Orig. Amount"],
+    ["Date", "Invoice", "Cust. PO", "Orig. Amount"],
+    ["Date", "Invoice", "Customer PO", "Orig. Amount"]
+  ];
+
+  for (const candidate of candidates) {
+    const idx = findHeaderRow(rows, candidate);
+    if (idx !== -1) return idx;
+  }
+
+  return -1;
+}
+
+function buildStatementMapFromRows(rows) {
+  const map = new Map();
+  const headerIndex = findStatementHeaderRow(rows);
+
+  if (headerIndex === -1) {
+    throw new Error("Could not find statement headers like Date / Invoice / Cust. P.O. / Orig. Amount");
+  }
+
+  const headers = rows[headerIndex].map(h => String(h || "").trim());
+  const dataRows = rows.slice(headerIndex + 1);
+
+  const records = dataRows
+    .filter(row => Array.isArray(row) && row.some(cell => String(cell || "").trim() !== ""))
+    .map(row => {
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = row[idx] !== undefined ? row[idx] : "";
+      });
+      return obj;
+    });
+
+  for (const r of records) {
+    const orderId = normalizeOrderId(
+      getFirstExisting(r, ["Cust. P.O.", "Cust. PO", "Customer PO"])
+    );
+
+    if (!/^\d{2}-\d{5}-\d{5}$/.test(orderId)) {
+      continue;
+    }
+
+    const invoice = String(getFirstExisting(r, ["Invoice"])).trim();
+    const date = String(getFirstExisting(r, ["Date"])).trim();
+    const amount = num(getFirstExisting(r, ["Orig. Amount", "Original Amount", "Amount"]));
+
+    if (!map.has(orderId)) {
+      map.set(orderId, {
+        orderId,
+        invoice,
+        date,
+        partsCost: 0
+      });
+    }
+
+    const row = map.get(orderId);
+    row.partsCost += amount;
+
+    if (!row.invoice && invoice) row.invoice = invoice;
+    if (!row.date && date) row.date = date;
+  }
+
+  return map;
+}
+
 async function processFiles() {
+  const statementFile = document.getElementById("statementFile").files[0];
   const ordersFile = document.getElementById("ordersFile").files[0];
   const shipFile = document.getElementById("shipFile").files[0];
-  const altoFile = document.getElementById("altoFile").files[0];
 
-  if (!ordersFile) {
-    alert("Upload the eBay Orders CSV first.");
+  if (!statementFile) {
+    alert("Upload the statement Excel file first. The statement drives the report.");
     return;
   }
 
   try {
-    const orderRecords = await parseCsvFile(ordersFile, ["Order Number", "Custom Label"]);
-    state.ordersMap = buildOrdersMap(orderRecords);
-
+    state.ordersMap = new Map();
     state.shipMap = new Map();
+    state.statementMap = new Map();
+    state.mergedRows = [];
+
+    // Statement Excel
+    if (statementFile.name.toLowerCase().endsWith(".csv")) {
+      const statementRecords = await parseCsvFile(statementFile, ["Date", "Invoice", "Orig. Amount"]);
+      const csvRows = [
+        Object.keys(statementRecords[0] || {}),
+        ...statementRecords.map(obj => Object.values(obj))
+      ];
+      state.statementMap = buildStatementMapFromRows(csvRows);
+    } else {
+      const statementRows = await parseExcelFile(statementFile);
+      state.statementMap = buildStatementMapFromRows(statementRows);
+    }
+
+    // eBay CSV
+    if (ordersFile) {
+      const orderRecords = await parseCsvFile(ordersFile, ["Order Number", "Custom Label"]);
+      state.ordersMap = buildOrdersMap(orderRecords);
+    }
+
+    // ShipStation CSV
     if (shipFile) {
       const shipRecords = await parseCsvFile(shipFile, ["Order #", "Shipping Cost"]);
       state.shipMap = buildShipMap(shipRecords);
     }
 
-    state.altoMap = new Map();
-    if (altoFile) {
-      state.altoMap = await parseAltoStatementPdf(altoFile);
-    }
-
-    state.mergedRows = buildMergedRows();
+    state.mergedRows = buildMergedRowsFromStatementOnly();
     renderAll();
+
     document.getElementById("exportBtn").disabled = false;
+    alert(`Processed ${state.mergedRows.length} statement-driven orders.`);
   } catch (err) {
     console.error(err);
     alert(`Processing failed: ${err.message}`);
@@ -135,7 +242,7 @@ function buildOrdersMap(records) {
     const buyerShip = num(getFirstExisting(r, ["Shipping And Handling"]));
     const tax = num(getFirstExisting(r, ["eBay Collected Tax", "eBay Collect And Remit Tax", "Sales Tax"]));
     const sku = String(getFirstExisting(r, ["Custom Label"])).trim();
-    const soldDate = String(getFirstExisting(r, ["Sale Date", "Sales Record Number"])).trim();
+    const soldDate = String(getFirstExisting(r, ["Sale Date"])).trim();
 
     if (!map.has(orderId)) {
       map.set(orderId, {
@@ -172,103 +279,45 @@ function buildShipMap(records) {
   return map;
 }
 
-async function parseAltoStatementPdf(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const altoMap = new Map();
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items.map(item => item.str).join("\n");
-
-    const orderIds = [...pageText.matchAll(ORDER_ID_REGEX)].map(m => m[0]);
-    const amounts = [...pageText.matchAll(MONEY_REGEX)].map(m => num(m[0]));
-
-    if (!orderIds.length) continue;
-
-    const tailAmounts = amounts.slice(-orderIds.length);
-
-    if (tailAmounts.length !== orderIds.length) {
-      console.warn(`PDF page ${pageNum}: order/amount count mismatch`, orderIds.length, tailAmounts.length);
-    }
-
-    const count = Math.min(orderIds.length, tailAmounts.length);
-
-    for (let i = 0; i < count; i++) {
-      const orderId = normalizeOrderId(orderIds[i]);
-      const amount = tailAmounts[i];
-
-      if (!altoMap.has(orderId)) {
-        altoMap.set(orderId, 0);
-      }
-      altoMap.set(orderId, altoMap.get(orderId) + amount);
-    }
-  }
-
-  return altoMap;
-}
-
 function estimateEbayFee(sold, buyerShip, tax) {
+  if (sold <= 0 && buyerShip <= 0) return 0;
+
   const feeBase = sold + buyerShip + tax;
   const rate = 0.136;
   const orderFee = (sold + buyerShip) <= 10 ? 0.30 : 0.40;
   return (feeBase * rate) + orderFee;
 }
 
-function buildMergedRows() {
-  const allOrderIds = new Set([
-    ...state.ordersMap.keys(),
-    ...state.shipMap.keys(),
-    ...state.altoMap.keys()
-  ]);
-
+function buildMergedRowsFromStatementOnly() {
   const rows = [];
 
-  for (const orderId of allOrderIds) {
-    const saleRow = state.ordersMap.get(orderId);
-    const sold = saleRow ? saleRow.sold : 0;
-    const buyerShip = saleRow ? saleRow.buyerShip : 0;
-    const tax = saleRow ? saleRow.tax : 0;
-    const soldDate = saleRow ? saleRow.soldDate : "";
-    const skus = saleRow ? [...saleRow.skus].join(" | ") : "";
+  for (const [orderId, statementRow] of state.statementMap.entries()) {
+    const ebay = state.ordersMap.get(orderId);
+    const ship = state.shipMap.get(orderId);
 
-    const shipCost = state.shipMap.get(orderId) || 0;
-    const partsCost = state.altoMap.get(orderId) || 0;
-    const estFee = saleRow ? estimateEbayFee(sold, buyerShip, tax) : 0;
+    const sold = ebay ? ebay.sold : 0;
+    const buyerShip = ebay ? ebay.buyerShip : 0;
+    const tax = ebay ? ebay.tax : 0;
+    const soldDate = ebay ? ebay.soldDate : "";
+    const skus = ebay ? [...ebay.skus].join(" | ") : "";
 
     rows.push({
       orderId,
+      statementDate: statementRow.date || "",
+      invoice: statementRow.invoice || "",
       soldDate,
       skus,
       sold,
       buyerShip,
       tax,
-      shipCost,
-      partsCost,
-      estFee
+      shipCost: ship || 0,
+      partsCost: statementRow.partsCost || 0,
+      estFee: estimateEbayFee(sold, buyerShip, tax)
     });
   }
 
   rows.sort((a, b) => b.orderId.localeCompare(a.orderId));
   return rows;
-}
-
-function getStatus(row) {
-  const hasSale = state.ordersMap.has(row.orderId);
-  const hasShip = state.shipMap.has(row.orderId);
-  const hasAlto = state.altoMap.has(row.orderId);
-
-  if (hasSale && hasShip && hasAlto) {
-    return { text: "Matched all 3", className: "status-all" };
-  }
-  if (hasSale && (hasShip || hasAlto)) {
-    return { text: hasShip ? "Missing Alto cost" : "Missing shipping", className: "status-partial" };
-  }
-  if (hasSale) {
-    return { text: "Sales only", className: "status-missing" };
-  }
-  return { text: "Not in eBay orders", className: "status-missing" };
 }
 
 function calcProfit(row) {
@@ -279,6 +328,22 @@ function calcMargin(row) {
   return row.sold > 0 ? (calcProfit(row) / row.sold) * 100 : 0;
 }
 
+function getStatus(row) {
+  const hasEbay = state.ordersMap.has(row.orderId);
+  const hasShip = state.shipMap.has(row.orderId);
+
+  if (hasEbay && hasShip) {
+    return { text: "Matched eBay + Ship", className: "status-all" };
+  }
+  if (hasEbay && !hasShip) {
+    return { text: "Missing shipping", className: "status-partial" };
+  }
+  if (!hasEbay && hasShip) {
+    return { text: "Missing eBay sale", className: "status-partial" };
+  }
+  return { text: "Statement only", className: "status-missing" };
+}
+
 function renderAll() {
   renderSummary();
   renderMatchSummary();
@@ -287,7 +352,7 @@ function renderAll() {
 
 function renderSummary() {
   const summary = document.getElementById("summary");
-  const rows = state.mergedRows.filter(r => state.ordersMap.has(r.orderId));
+  const rows = state.mergedRows;
 
   const totalOrders = rows.length;
   const totalSold = rows.reduce((s, r) => s + r.sold, 0);
@@ -299,11 +364,11 @@ function renderSummary() {
   const totalProfit = rows.reduce((s, r) => s + calcProfit(r), 0);
 
   summary.innerHTML = `
-    ${summaryCard("Orders", totalOrders)}
+    ${summaryCard("Statement Orders", totalOrders)}
     ${summaryCard("Sold", money(totalSold))}
     ${summaryCard("Buyer Shipping", money(totalBuyerShip))}
     ${summaryCard("Tax", money(totalTax))}
-    ${summaryCard("Ship Cost", money(totalShipCost))}
+    ${summaryCard("Shipping Cost", money(totalShipCost))}
     ${summaryCard("Parts Cost", money(totalPartsCost))}
     ${summaryCard("Est. eBay Fees", money(totalFees))}
     ${summaryCard("Profit", money(totalProfit))}
@@ -312,28 +377,28 @@ function renderSummary() {
 
 function renderMatchSummary() {
   const matchSummary = document.getElementById("matchSummary");
-  const rows = state.mergedRows.filter(r => state.ordersMap.has(r.orderId));
+  const rows = state.mergedRows;
 
-  let all3 = 0;
+  let matchedAll = 0;
   let missingShip = 0;
-  let missingAlto = 0;
-  let salesOnly = 0;
+  let missingEbay = 0;
+  let statementOnly = 0;
 
   for (const row of rows) {
+    const hasEbay = state.ordersMap.has(row.orderId);
     const hasShip = state.shipMap.has(row.orderId);
-    const hasAlto = state.altoMap.has(row.orderId);
 
-    if (hasShip && hasAlto) all3++;
-    else if (hasShip && !hasAlto) missingAlto++;
-    else if (!hasShip && hasAlto) missingShip++;
-    else salesOnly++;
+    if (hasEbay && hasShip) matchedAll++;
+    else if (hasEbay && !hasShip) missingShip++;
+    else if (!hasEbay && hasShip) missingEbay++;
+    else statementOnly++;
   }
 
   matchSummary.innerHTML = `
-    ${summaryCard("Matched all 3", all3)}
-    ${summaryCard("Missing Alto cost", missingAlto)}
+    ${summaryCard("Matched eBay + Ship", matchedAll)}
     ${summaryCard("Missing shipping", missingShip)}
-    ${summaryCard("Sales only", salesOnly)}
+    ${summaryCard("Missing eBay sale", missingEbay)}
+    ${summaryCard("Statement only", statementOnly)}
   `;
 }
 
@@ -351,8 +416,6 @@ function renderTable() {
   tbody.innerHTML = "";
 
   state.mergedRows.forEach((row, index) => {
-    if (!state.ordersMap.has(row.orderId)) return;
-
     const profit = calcProfit(row);
     const margin = calcMargin(row);
     const status = getStatus(row);
@@ -360,7 +423,8 @@ function renderTable() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${row.orderId}</td>
-      <td>${row.soldDate || ""}</td>
+      <td>${row.statementDate || row.soldDate || ""}</td>
+      <td>${row.invoice || '<span class="small">—</span>'}</td>
       <td>${row.skus || '<span class="small">—</span>'}</td>
       <td>${money(row.sold)}</td>
       <td>${money(row.buyerShip)}</td>
@@ -407,39 +471,25 @@ function onEditCost(event) {
   if (!state.mergedRows[index]) return;
   state.mergedRows[index][field] = value;
 
-  renderSummary();
-  renderMatchSummary();
-
-  const tbody = document.querySelector("#resultTable tbody");
-  const row = state.mergedRows[index];
-  const profit = calcProfit(row);
-  const margin = calcMargin(row);
-
-  const tr = tbody.children.find ? tbody.children.find(() => false) : null;
-  // simplest reliable refresh:
-  renderTable();
+  renderAll();
 }
 
 function exportCsv() {
-  const rows = state.mergedRows
-    .filter(r => state.ordersMap.has(r.orderId))
-    .map(r => {
-      const status = getStatus(r).text;
-      return {
-        "Order #": r.orderId,
-        "Date": r.soldDate,
-        "SKU(s)": r.skus,
-        "Sold": r.sold.toFixed(2),
-        "Buyer Shipping": r.buyerShip.toFixed(2),
-        "Tax": r.tax.toFixed(2),
-        "Shipping Cost": r.shipCost.toFixed(2),
-        "Parts Cost": r.partsCost.toFixed(2),
-        "Estimated eBay Fee": r.estFee.toFixed(2),
-        "Profit": calcProfit(r).toFixed(2),
-        "Margin %": calcMargin(r).toFixed(2),
-        "Status": status
-      };
-    });
+  const rows = state.mergedRows.map(r => ({
+    "Order #": r.orderId,
+    "Statement Date": r.statementDate,
+    "Invoice": r.invoice,
+    "SKU(s)": r.skus,
+    "Sold": r.sold.toFixed(2),
+    "Buyer Shipping": r.buyerShip.toFixed(2),
+    "Tax": r.tax.toFixed(2),
+    "Shipping Cost": r.shipCost.toFixed(2),
+    "Parts Cost": r.partsCost.toFixed(2),
+    "Estimated eBay Fee": r.estFee.toFixed(2),
+    "Profit": calcProfit(r).toFixed(2),
+    "Margin %": calcMargin(r).toFixed(2),
+    "Status": getStatus(r).text
+  }));
 
   const csv = Papa.unparse(rows);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -447,7 +497,7 @@ function exportCsv() {
 
   const a = document.createElement("a");
   a.href = url;
-  a.download = "reconciled_pnl.csv";
+  a.download = "statement_driven_pnl.csv";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
