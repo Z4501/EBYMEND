@@ -24,7 +24,7 @@ body {
 }
 
 .page {
-  max-width: 1600px;
+  max-width: 1650px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -136,7 +136,7 @@ body {
 
 table {
   width: 100%;
-  min-width: 1600px;
+  min-width: 1700px;
   border-collapse: collapse;
 }
 
