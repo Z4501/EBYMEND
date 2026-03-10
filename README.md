@@ -1,8 +1,9 @@
-# Statement-Driven eBay P&L Viewer
+# Statement-Driven Marketplace P&L Viewer
 
 Upload:
 - Statement Excel (.xlsx / .xls / .csv)
 - eBay Orders CSV
+- Amazon Transactions (.xlsx / .xls / .csv)
 - ShipStation CSV
 
 The statement drives which orders appear.
@@ -10,14 +11,11 @@ The statement drives which orders appear.
 Matching keys:
 - Statement `Cust. P.O.`
 - eBay `Order Number`
+- Amazon `Order ID`
 - ShipStation `Order #`
 
-Features:
-- statement-driven monthly view
-- reads statement parts cost from Excel
-- uses Quantity from eBay orders
-- multiplies Sold For × Quantity
-- shipping cost editable
-- parts cost editable
-- estimated eBay fee
-- CSV export
+Rules:
+- eBay orders use eBay sales + ShipStation shipping
+- Amazon orders use Amazon Order Payment + Amazon Shipping Services Purchased
+- returns/refunds/reversals are ignored for Amazon in this version
+- shipping cost and parts cost remain editable
