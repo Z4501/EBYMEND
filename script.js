@@ -6,6 +6,22 @@ const state = {
   mergedRows: []
 };
 
+/*
+  ==========================================
+  EDIT THIS TABLE AS YOUR IN-HOUSE COST LIST
+  ==========================================
+
+  Key = exact SKU / Custom Label
+  Value = in-house cost per unit
+
+  Add as many as you want.
+*/
+const SKU_COST_RULES = {
+  "FK032946ESK": 6.13,
+  "WWPOFK032946ESK+": 6.34,
+  "R2-QS1S-MLLF": 8.00
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("processBtn").addEventListener("click", processFiles);
   document.getElementById("exportBtn").addEventListener("click", exportCsv);
@@ -255,7 +271,8 @@ function buildOrdersMap(records) {
         tax: 0,
         qty: 0,
         fee: 0,
-        skus: new Set()
+        skus: [],
+        skuQtyMap: {}
       });
     }
 
@@ -265,7 +282,10 @@ function buildOrdersMap(records) {
     row.tax += tax;
     row.qty += qty;
 
-    if (sku) row.skus.add(sku);
+    if (sku) {
+      row.skus.push(sku);
+      row.skuQtyMap[sku] = (row.skuQtyMap[sku] || 0) + qty;
+    }
   }
 
   for (const row of map.values()) {
@@ -319,7 +339,7 @@ function buildAmazonMap(records) {
         qty: 1,
         fee: 0,
         shipCost: 0,
-        skus: new Set()
+        skus: []
       });
     }
 
@@ -330,9 +350,10 @@ function buildAmazonMap(records) {
     if (txType === "Order Payment") {
       row.sold += num(getFirstExisting(r, ["Total product charges"]));
       row.fee += Math.abs(num(getFirstExisting(r, ["Amazon fees"])));
+
       const detail = String(getFirstExisting(r, ["Product Details"])).trim();
       if (detail && detail.toLowerCase() !== "billing") {
-        row.skus.add(detail);
+        row.skus.push(detail);
       }
     } else if (txType === "Shipping services purchased through Amazon") {
       row.shipCost += Math.abs(num(getFirstExisting(r, ["Total (USD)"])));
@@ -350,6 +371,23 @@ function estimateEbayFee(sold, buyerShip, tax) {
   const orderFee = (sold + buyerShip) <= 10 ? 0.30 : 0.40;
 
   return (feeBase * rate) + orderFee;
+}
+
+function getSkuCostFromSkuQtyMap(skuQtyMap) {
+  let total = 0;
+  let matchedAny = false;
+
+  for (const [sku, qty] of Object.entries(skuQtyMap || {})) {
+    if (SKU_COST_RULES[sku] !== undefined) {
+      total += SKU_COST_RULES[sku] * qty;
+      matchedAny = true;
+    }
+  }
+
+  return {
+    total,
+    matchedAny
+  };
 }
 
 async function processFiles() {
@@ -436,24 +474,34 @@ function buildMergedRowsFromStatementOnly() {
     let tax = 0;
     let fee = 0;
     let shipCost = shipstationCost;
+    let partsCost = statementRow.partsCost || 0;
+    let costSource = partsCost > 0 ? "Statement" : "None";
 
     if (isEbayOrderId(orderId)) {
       marketplace = "eBay";
       if (ebay) {
         soldDate = ebay.soldDate || "";
         qty = ebay.qty || 0;
-        skus = [...ebay.skus].join(" | ");
+        skus = ebay.skus.join(" | ");
         sold = ebay.sold || 0;
         buyerShip = ebay.buyerShip || 0;
         tax = ebay.tax || 0;
         fee = ebay.fee || 0;
+
+        if (!(partsCost > 0)) {
+          const skuCost = getSkuCostFromSkuQtyMap(ebay.skuQtyMap);
+          if (skuCost.matchedAny) {
+            partsCost = skuCost.total;
+            costSource = "SKU Rule";
+          }
+        }
       }
     } else if (isAmazonOrderId(orderId)) {
       marketplace = "Amazon";
       if (amazon) {
         soldDate = amazon.soldDate || "";
         qty = amazon.qty || 1;
-        skus = [...amazon.skus].join(" | ");
+        skus = amazon.skus.join(" | ");
         sold = amazon.sold || 0;
         buyerShip = amazon.buyerShip || 0;
         tax = amazon.tax || 0;
@@ -474,7 +522,8 @@ function buildMergedRowsFromStatementOnly() {
       buyerShip,
       tax,
       shipCost,
-      partsCost: statementRow.partsCost || 0,
+      partsCost,
+      costSource,
       fee
     });
   }
@@ -630,6 +679,7 @@ function renderTable() {
           data-field="partsCost"
         />
       </td>
+      <td>${row.costSource || ""}</td>
       <td>${money(row.fee)}</td>
       <td class="${profit >= 0 ? "money-good" : "money-bad"}">${money(profit)}</td>
       <td>${margin.toFixed(1)}%</td>
@@ -652,6 +702,10 @@ function onEditCost(event) {
   if (!state.mergedRows[index]) return;
   state.mergedRows[index][field] = value;
 
+  if (field === "partsCost") {
+    state.mergedRows[index].costSource = "Manual";
+  }
+
   renderAll();
 }
 
@@ -668,6 +722,7 @@ function exportCsv() {
     "Tax": r.tax.toFixed(2),
     "Shipping Cost": r.shipCost.toFixed(2),
     "Parts Cost": r.partsCost.toFixed(2),
+    "Cost Source": r.costSource,
     "Fee": r.fee.toFixed(2),
     "Profit": calcProfit(r).toFixed(2),
     "Margin %": calcMargin(r).toFixed(2),
