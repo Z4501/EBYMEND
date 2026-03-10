@@ -11,12 +11,17 @@
     <header class="hero">
       <h1>eBay Order Reconciliation & P&amp;L Viewer</h1>
       <p>
-        Upload eBay Orders CSV, ShipStation CSV, and Alto Statement PDF.
-        This app matches everything by Order #.
+        Upload Statement Excel, eBay Orders CSV, and ShipStation CSV.
+        The statement drives the report month.
       </p>
     </header>
 
     <section class="panel uploads">
+      <div class="upload-card">
+        <label for="statementFile">Statement Excel (.xlsx)</label>
+        <input type="file" id="statementFile" accept=".xlsx,.xls,.csv" />
+      </div>
+
       <div class="upload-card">
         <label for="ordersFile">eBay Orders CSV</label>
         <input type="file" id="ordersFile" accept=".csv" />
@@ -25,11 +30,6 @@
       <div class="upload-card">
         <label for="shipFile">ShipStation CSV</label>
         <input type="file" id="shipFile" accept=".csv" />
-      </div>
-
-      <div class="upload-card">
-        <label for="altoFile">Alto Statement PDF</label>
-        <input type="file" id="altoFile" accept=".pdf" />
       </div>
     </section>
 
@@ -56,6 +56,7 @@
             <tr>
               <th>Order #</th>
               <th>Date</th>
+              <th>Invoice</th>
               <th>SKU(s)</th>
               <th>Sold</th>
               <th>Buyer Ship</th>
@@ -75,7 +76,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs" type="module"></script>
-  <script type="module" src="script.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>
