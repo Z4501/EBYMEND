@@ -42,40 +42,56 @@ function normalizeOrderId(value) {
     .replace(/\s+/g, "");
 }
 
-function normalizeLooseKey(value) {
-  return String(value || "")
-    .trim()
-    .replace(/^"+|"+$/g, "")
-    .replace(/\s+/g, "")
-    .toUpperCase();
-}
-
 function extractFirstNumber(value) {
   if (value === null || value === undefined) return "";
   const match = String(value).match(/\d+/);
   return match ? match[0] : "";
 }
 
+function extractEmbeddedMarketplaceOrderId(value) {
+  const text = String(value || "").trim();
+
+  const ebayMatch = text.match(/\b\d{2}-\d{5}-\d{5}\b/);
+  if (ebayMatch) return ebayMatch[0];
+
+  const amazonMatch = text.match(/\b\d{3}-\d{7}-\d{7}\b/);
+  if (amazonMatch) return amazonMatch[0];
+
+  return "";
+}
+
 function buildStatementMatchKey(rawValue) {
   const raw = String(rawValue || "").trim();
   const normalized = normalizeOrderId(raw);
+  const embeddedMarketplaceOrderId = extractEmbeddedMarketplaceOrderId(raw);
+  const numericOnly = extractFirstNumber(raw);
+
+  if (embeddedMarketplaceOrderId) {
+    return {
+      raw,
+      normalized: embeddedMarketplaceOrderId,
+      numericOnly,
+      isMarketplaceOrder: true,
+      embeddedMarketplaceOrderId
+    };
+  }
 
   if (isEbayOrderId(normalized) || isAmazonOrderId(normalized)) {
     return {
       raw,
       normalized,
-      numericOnly: extractFirstNumber(normalized),
-      isMarketplaceOrder: true
+      numericOnly,
+      isMarketplaceOrder: true,
+      embeddedMarketplaceOrderId: normalized
     };
   }
-
-  const numericOnly = extractFirstNumber(raw);
 
   return {
     raw,
     normalized,
     numericOnly,
-    isMarketplaceOrder: false
+    isMarketplaceOrder: false,
+    embeddedMarketplaceOrderId: ""
   };
 }
 
@@ -219,6 +235,8 @@ function findStatementHeaderRow(rows) {
 function buildStatementMapsFromRows(rows) {
   const statementMap = new Map();
   const statementAltMap = new Map();
+  const linkedAltKeys = new Set();
+
   const headerIndex = findStatementHeaderRow(rows);
 
   if (headerIndex === -1) {
@@ -254,7 +272,7 @@ function buildStatementMapsFromRows(rows) {
       ])
     );
 
-    const primaryId = matchInfo.normalized;
+    const primaryId = matchInfo.embeddedMarketplaceOrderId || matchInfo.normalized;
     const altNumericId = matchInfo.numericOnly;
 
     if (matchInfo.isMarketplaceOrder && primaryId) {
@@ -277,6 +295,10 @@ function buildStatementMapsFromRows(rows) {
       if (!row.date && date) row.date = date;
       if (!row.rawPO && matchInfo.raw) row.rawPO = matchInfo.raw;
       if (!row.numericPO && altNumericId) row.numericPO = altNumericId;
+
+      if (altNumericId && altNumericId !== primaryId) {
+        linkedAltKeys.add(altNumericId);
+      }
     } else if (altNumericId) {
       if (!statementAltMap.has(altNumericId)) {
         statementAltMap.set(altNumericId, {
@@ -298,6 +320,10 @@ function buildStatementMapsFromRows(rows) {
       if (!row.rawPO && matchInfo.raw) row.rawPO = matchInfo.raw;
       if (!row.numericPO && altNumericId) row.numericPO = altNumericId;
     }
+  }
+
+  for (const linkedKey of linkedAltKeys) {
+    statementAltMap.delete(linkedKey);
   }
 
   return { statementMap, statementAltMap };
@@ -779,9 +805,6 @@ function getStatus(row) {
     }
     if (hasEbay) {
       return { text: "eBay only", className: "status-partial" };
-    }
-    if (hasStatementByOrder || hasStatementByPO) {
-      return { text: "Statement only", className: "status-missing" };
     }
     return { text: "Statement only", className: "status-missing" };
   }
