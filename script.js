@@ -12,6 +12,12 @@ const SKU_COST_RULES = {
   "R2-QS1S-MLLF": 8.00
 };
 
+const AMAZON_TITLE_COST_RULES = {
+  "GM TH350 TRANSMISSION SUPER MAX FILTER K": 6.13,
+  "GM TH350 TRANSMISSION SUPER SEAL FILTER": 6.34,
+  "GM TH400 TRANSMISSION SUPER MAX FILTER K": 8.00
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("processBtn").addEventListener("click", processFiles);
   document.getElementById("exportBtn").addEventListener("click", exportCsv);
