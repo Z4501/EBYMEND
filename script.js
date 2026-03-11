@@ -3,6 +3,7 @@ const state = {
   amazonMap: new Map(),
   shipMap: new Map(),
   statementMap: new Map(),
+  statementAltMap: new Map(),
   mergedRows: []
 };
 
@@ -39,6 +40,43 @@ function normalizeOrderId(value) {
     .trim()
     .replace(/^"+|"+$/g, "")
     .replace(/\s+/g, "");
+}
+
+function normalizeLooseKey(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^"+|"+$/g, "")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+}
+
+function extractFirstNumber(value) {
+  if (value === null || value === undefined) return "";
+  const match = String(value).match(/\d+/);
+  return match ? match[0] : "";
+}
+
+function buildStatementMatchKey(rawValue) {
+  const raw = String(rawValue || "").trim();
+  const normalized = normalizeOrderId(raw);
+
+  if (isEbayOrderId(normalized) || isAmazonOrderId(normalized)) {
+    return {
+      raw,
+      normalized,
+      numericOnly: extractFirstNumber(normalized),
+      isMarketplaceOrder: true
+    };
+  }
+
+  const numericOnly = extractFirstNumber(raw);
+
+  return {
+    raw,
+    normalized,
+    numericOnly,
+    isMarketplaceOrder: false
+  };
 }
 
 function isEbayOrderId(orderId) {
@@ -178,8 +216,9 @@ function findStatementHeaderRow(rows) {
   return -1;
 }
 
-function buildStatementMapFromRows(rows) {
-  const map = new Map();
+function buildStatementMapsFromRows(rows) {
+  const statementMap = new Map();
+  const statementAltMap = new Map();
   const headerIndex = findStatementHeaderRow(rows);
 
   if (headerIndex === -1) {
@@ -200,13 +239,8 @@ function buildStatementMapFromRows(rows) {
     });
 
   for (const r of records) {
-    const orderId = normalizeOrderId(
-      getFirstExisting(r, ["Cust. P.O.", "Cust. PO", "Customer PO"])
-    );
-
-    if (!isEbayOrderId(orderId) && !isAmazonOrderId(orderId)) {
-      continue;
-    }
+    const custPoRaw = getFirstExisting(r, ["Cust. P.O.", "Cust. PO", "Customer PO"]);
+    const matchInfo = buildStatementMatchKey(custPoRaw);
 
     const invoice = String(getFirstExisting(r, ["Invoice"])).trim();
     const date = String(getFirstExisting(r, ["Date"])).trim();
@@ -220,23 +254,53 @@ function buildStatementMapFromRows(rows) {
       ])
     );
 
-    if (!map.has(orderId)) {
-      map.set(orderId, {
-        orderId,
-        invoice,
-        date,
-        partsCost: 0
-      });
+    const primaryId = matchInfo.normalized;
+    const altNumericId = matchInfo.numericOnly;
+
+    if (matchInfo.isMarketplaceOrder && primaryId) {
+      if (!statementMap.has(primaryId)) {
+        statementMap.set(primaryId, {
+          orderId: primaryId,
+          rawPO: matchInfo.raw,
+          normalizedPO: primaryId,
+          numericPO: altNumericId,
+          invoice,
+          date,
+          partsCost: 0,
+          matchSource: "order"
+        });
+      }
+
+      const row = statementMap.get(primaryId);
+      row.partsCost += amount;
+      if (!row.invoice && invoice) row.invoice = invoice;
+      if (!row.date && date) row.date = date;
+      if (!row.rawPO && matchInfo.raw) row.rawPO = matchInfo.raw;
+      if (!row.numericPO && altNumericId) row.numericPO = altNumericId;
+    } else if (altNumericId) {
+      if (!statementAltMap.has(altNumericId)) {
+        statementAltMap.set(altNumericId, {
+          orderId: "",
+          rawPO: matchInfo.raw,
+          normalizedPO: primaryId,
+          numericPO: altNumericId,
+          invoice,
+          date,
+          partsCost: 0,
+          matchSource: "po"
+        });
+      }
+
+      const row = statementAltMap.get(altNumericId);
+      row.partsCost += amount;
+      if (!row.invoice && invoice) row.invoice = invoice;
+      if (!row.date && date) row.date = date;
+      if (!row.rawPO && matchInfo.raw) row.rawPO = matchInfo.raw;
+      if (!row.numericPO && altNumericId) row.numericPO = altNumericId;
     }
-
-    const row = map.get(orderId);
-    row.partsCost += amount;
-
-    if (!row.invoice && invoice) row.invoice = invoice;
-    if (!row.date && date) row.date = date;
   }
 
-  return map;
+  return { statementMap, statementAltMap };
 }
 
 function buildOrdersMap(records) {
@@ -454,6 +518,7 @@ async function processFiles() {
     state.amazonMap = new Map();
     state.shipMap = new Map();
     state.statementMap = new Map();
+    state.statementAltMap = new Map();
     state.mergedRows = [];
 
     if (statementFile.name.toLowerCase().endsWith(".csv")) {
@@ -462,10 +527,14 @@ async function processFiles() {
         Object.keys(statementRecords[0] || {}),
         ...statementRecords.map(obj => Object.values(obj))
       ];
-      state.statementMap = buildStatementMapFromRows(csvRows);
+      const maps = buildStatementMapsFromRows(csvRows);
+      state.statementMap = maps.statementMap;
+      state.statementAltMap = maps.statementAltMap;
     } else {
       const statementRows = await parseExcelFile(statementFile);
-      state.statementMap = buildStatementMapFromRows(statementRows);
+      const maps = buildStatementMapsFromRows(statementRows);
+      state.statementMap = maps.statementMap;
+      state.statementAltMap = maps.statementAltMap;
     }
 
     if (ordersFile) {
@@ -508,83 +577,62 @@ async function processFiles() {
 function buildMergedRows() {
   const rows = [];
   const includedOrderIds = new Set();
+  const usedStatementPrimary = new Set();
+  const usedStatementAlt = new Set();
 
-  for (const [orderId, statementRow] of state.statementMap.entries()) {
-    const ebay = state.ordersMap.get(orderId);
-    const amazon = state.amazonMap.get(orderId);
+  for (const [orderId, ebay] of state.ordersMap.entries()) {
+    const statementRow = state.statementMap.get(orderId);
     const shipstationCost = state.shipMap.get(orderId) || 0;
 
-    let marketplace = "Unknown";
-    let soldDate = "";
-    let qty = 0;
-    let skus = "";
-    let sold = 0;
-    let buyerShip = 0;
-    let tax = 0;
-    let fee = 0;
-    let shipCost = shipstationCost;
-    let partsCost = statementRow.partsCost || 0;
+    let matchedStatement = statementRow || null;
+    let statementMatchType = statementRow ? "Order #" : "";
+    let partsCost = statementRow ? (statementRow.partsCost || 0) : 0;
+    let invoice = statementRow ? (statementRow.invoice || "") : "";
+    let statementDate = statementRow ? (statementRow.date || "") : "";
+    let statementPO = statementRow ? (statementRow.rawPO || "") : "";
+
+    if (!matchedStatement) {
+      const alt = state.statementAltMap.get(orderId);
+      if (alt) {
+        matchedStatement = alt;
+        statementMatchType = "Cust. P.O. #";
+        partsCost = alt.partsCost || 0;
+        invoice = alt.invoice || "";
+        statementDate = alt.date || "";
+        statementPO = alt.rawPO || "";
+        usedStatementAlt.add(orderId);
+      }
+    } else {
+      usedStatementPrimary.add(orderId);
+    }
+
     let costSource = partsCost > 0 ? "Statement" : "None";
 
-    if (isEbayOrderId(orderId)) {
-      marketplace = "eBay";
-      if (ebay) {
-        soldDate = ebay.soldDate || "";
-        qty = ebay.qty || 0;
-        skus = ebay.skus.join(" | ");
-        sold = ebay.sold || 0;
-        buyerShip = ebay.buyerShip || 0;
-        tax = ebay.tax || 0;
-        fee = ebay.fee || 0;
-
-        if (!(partsCost > 0)) {
-          const skuCost = getSkuCostFromSkuQtyMap(ebay.skuQtyMap);
-          if (skuCost.matchedAny) {
-            partsCost = skuCost.total;
-            costSource = "SKU Rule";
-          }
-        }
-      }
-    } else if (isAmazonOrderId(orderId)) {
-      marketplace = "Amazon";
-      if (amazon) {
-        soldDate = amazon.soldDate || "";
-        qty = amazon.qty || 0;
-        skus = amazon.skus.join(" | ");
-        sold = amazon.sold || 0;
-        buyerShip = amazon.buyerShip || 0;
-        tax = amazon.tax || 0;
-        fee = amazon.fee || 0;
-        shipCost = amazon.shipCost || 0;
-
-        if (!(partsCost > 0)) {
-          const skuCost = getSkuCostFromSkuQtyMap(amazon.skuQtyMap);
-          if (skuCost.matchedAny) {
-            partsCost = skuCost.total;
-            costSource = "SKU Rule";
-          } else if (amazon.titleRuleMatched) {
-            partsCost = amazon.titleRuleCost;
-            costSource = "Amazon Title Rule";
-          }
-        }
+    if (!(partsCost > 0)) {
+      const skuCost = getSkuCostFromSkuQtyMap(ebay.skuQtyMap);
+      if (skuCost.matchedAny) {
+        partsCost = skuCost.total;
+        costSource = "SKU Rule";
       }
     }
 
     rows.push({
-      marketplace,
+      marketplace: "eBay",
       orderId,
-      statementDate: statementRow.date || "",
-      invoice: statementRow.invoice || "",
-      soldDate,
-      skus,
-      qty,
-      sold,
-      buyerShip,
-      tax,
-      shipCost,
+      statementDate,
+      invoice,
+      statementPO,
+      statementMatchType,
+      soldDate: ebay.soldDate || "",
+      skus: ebay.skus.join(" | "),
+      qty: ebay.qty || 0,
+      sold: ebay.sold || 0,
+      buyerShip: ebay.buyerShip || 0,
+      tax: ebay.tax || 0,
+      shipCost: shipstationCost,
       partsCost,
       costSource,
-      fee
+      fee: ebay.fee || 0
     });
 
     includedOrderIds.add(orderId);
@@ -593,25 +641,49 @@ function buildMergedRows() {
   for (const [orderId, amazon] of state.amazonMap.entries()) {
     if (includedOrderIds.has(orderId)) continue;
 
-    const skuCost = getSkuCostFromSkuQtyMap(amazon.skuQtyMap);
-    let partsCost = 0;
-    let costSource = "None";
+    const statementRow = state.statementMap.get(orderId);
+    let matchedStatement = statementRow || null;
+    let statementMatchType = statementRow ? "Order #" : "";
+    let partsCost = statementRow ? (statementRow.partsCost || 0) : 0;
+    let invoice = statementRow ? (statementRow.invoice || "") : "";
+    let statementDate = statementRow ? (statementRow.date || "") : "";
+    let statementPO = statementRow ? (statementRow.rawPO || "") : "";
 
-    if (skuCost.matchedAny) {
-      partsCost = skuCost.total;
-      costSource = "SKU Rule";
-    } else if (amazon.titleRuleMatched) {
-      partsCost = amazon.titleRuleCost;
-      costSource = "Amazon Title Rule";
+    if (!matchedStatement) {
+      const alt = state.statementAltMap.get(orderId);
+      if (alt) {
+        matchedStatement = alt;
+        statementMatchType = "Cust. P.O. #";
+        partsCost = alt.partsCost || 0;
+        invoice = alt.invoice || "";
+        statementDate = alt.date || "";
+        statementPO = alt.rawPO || "";
+        usedStatementAlt.add(orderId);
+      }
     } else {
-      continue;
+      usedStatementPrimary.add(orderId);
+    }
+
+    let costSource = partsCost > 0 ? "Statement" : "None";
+
+    if (!(partsCost > 0)) {
+      const skuCost = getSkuCostFromSkuQtyMap(amazon.skuQtyMap);
+      if (skuCost.matchedAny) {
+        partsCost = skuCost.total;
+        costSource = "SKU Rule";
+      } else if (amazon.titleRuleMatched) {
+        partsCost = amazon.titleRuleCost;
+        costSource = "Amazon Title Rule";
+      }
     }
 
     rows.push({
       marketplace: "Amazon",
       orderId,
-      statementDate: "",
-      invoice: "",
+      statementDate,
+      invoice,
+      statementPO,
+      statementMatchType,
       soldDate: amazon.soldDate || "",
       skus: amazon.skus.join(" | "),
       qty: amazon.qty || 0,
@@ -627,7 +699,54 @@ function buildMergedRows() {
     includedOrderIds.add(orderId);
   }
 
-  rows.sort((a, b) => b.orderId.localeCompare(a.orderId));
+  for (const [orderId, statementRow] of state.statementMap.entries()) {
+    if (includedOrderIds.has(orderId)) continue;
+    if (usedStatementPrimary.has(orderId)) continue;
+
+    rows.push({
+      marketplace: isAmazonOrderId(orderId) ? "Amazon" : isEbayOrderId(orderId) ? "eBay" : "Unknown",
+      orderId,
+      statementDate: statementRow.date || "",
+      invoice: statementRow.invoice || "",
+      statementPO: statementRow.rawPO || "",
+      statementMatchType: "Order #",
+      soldDate: "",
+      skus: "",
+      qty: 0,
+      sold: 0,
+      buyerShip: 0,
+      tax: 0,
+      shipCost: state.shipMap.get(orderId) || 0,
+      partsCost: statementRow.partsCost || 0,
+      costSource: (statementRow.partsCost || 0) > 0 ? "Statement" : "None",
+      fee: 0
+    });
+  }
+
+  for (const [numericKey, statementRow] of state.statementAltMap.entries()) {
+    if (usedStatementAlt.has(numericKey)) continue;
+
+    rows.push({
+      marketplace: "Unknown",
+      orderId: numericKey,
+      statementDate: statementRow.date || "",
+      invoice: statementRow.invoice || "",
+      statementPO: statementRow.rawPO || "",
+      statementMatchType: "Cust. P.O. #",
+      soldDate: "",
+      skus: "",
+      qty: 0,
+      sold: 0,
+      buyerShip: 0,
+      tax: 0,
+      shipCost: 0,
+      partsCost: statementRow.partsCost || 0,
+      costSource: (statementRow.partsCost || 0) > 0 ? "Statement" : "None",
+      fee: 0
+    });
+  }
+
+  rows.sort((a, b) => String(b.orderId).localeCompare(String(a.orderId)));
   return rows;
 }
 
@@ -643,34 +762,52 @@ function getStatus(row) {
   if (row.marketplace === "eBay") {
     const hasEbay = state.ordersMap.has(row.orderId);
     const hasShip = state.shipMap.has(row.orderId);
-    const hasStatement = state.statementMap.has(row.orderId);
+    const hasStatementByOrder = state.statementMap.has(row.orderId);
+    const hasStatementByPO = state.statementAltMap.has(row.orderId);
 
-    if (hasStatement && hasEbay && hasShip) {
+    if (hasEbay && hasStatementByOrder && hasShip) {
       return { text: "Matched eBay + Ship", className: "status-all" };
     }
-    if (hasStatement && hasEbay && !hasShip) {
-      return { text: "Missing shipping", className: "status-partial" };
+    if (hasEbay && hasStatementByPO && hasShip) {
+      return { text: "Matched by PO + Ship", className: "status-all" };
+    }
+    if (hasEbay && hasStatementByOrder && !hasShip) {
+      return { text: "Matched by order / Missing shipping", className: "status-partial" };
+    }
+    if (hasEbay && hasStatementByPO && !hasShip) {
+      return { text: "Matched by PO / Missing shipping", className: "status-partial" };
     }
     if (hasEbay) {
       return { text: "eBay only", className: "status-partial" };
+    }
+    if (hasStatementByOrder || hasStatementByPO) {
+      return { text: "Statement only", className: "status-missing" };
     }
     return { text: "Statement only", className: "status-missing" };
   }
 
   if (row.marketplace === "Amazon") {
     const hasAmazon = state.amazonMap.has(row.orderId);
-    const hasStatement = state.statementMap.has(row.orderId);
+    const hasStatementByOrder = state.statementMap.has(row.orderId);
+    const hasStatementByPO = state.statementAltMap.has(row.orderId);
 
-    if (hasStatement && hasAmazon) {
+    if (hasAmazon && hasStatementByOrder) {
       return { text: "Matched Amazon", className: "status-all" };
     }
-    if (!hasStatement && hasAmazon && (row.costSource === "SKU Rule" || row.costSource === "Amazon Title Rule")) {
+    if (hasAmazon && hasStatementByPO) {
+      return { text: "Matched Amazon by PO", className: "status-all" };
+    }
+    if (!hasStatementByOrder && !hasStatementByPO && hasAmazon && (row.costSource === "SKU Rule" || row.costSource === "Amazon Title Rule")) {
       return { text: "Amazon SKU-only", className: "status-partial" };
     }
     if (hasAmazon) {
       return { text: "Amazon only", className: "status-partial" };
     }
     return { text: "Statement only", className: "status-missing" };
+  }
+
+  if (row.statementMatchType === "Cust. P.O. #") {
+    return { text: "Statement only (PO)", className: "status-missing" };
   }
 
   return { text: "Unknown order type", className: "status-missing" };
@@ -719,20 +856,16 @@ function renderMatchSummary() {
   let amazonStatementOnly = 0;
 
   for (const row of rows) {
+    const statusText = getStatus(row).text;
+
     if (row.marketplace === "eBay") {
-      const hasEbay = state.ordersMap.has(row.orderId);
-      const hasShip = state.shipMap.has(row.orderId);
-
-      if (hasEbay && hasShip) ebayMatched++;
-      else if (hasEbay && !hasShip) ebayMissingShip++;
-      else ebayStatementOnly++;
+      if (statusText === "Matched eBay + Ship" || statusText === "Matched by PO + Ship") ebayMatched++;
+      else if (statusText === "Matched by order / Missing shipping" || statusText === "Matched by PO / Missing shipping") ebayMissingShip++;
+      else if (statusText === "Statement only") ebayStatementOnly++;
     } else if (row.marketplace === "Amazon") {
-      const hasAmazon = state.amazonMap.has(row.orderId);
-      const hasStatement = state.statementMap.has(row.orderId);
-
-      if (hasAmazon && hasStatement) amazonMatched++;
-      else if (hasAmazon && !hasStatement && (row.costSource === "SKU Rule" || row.costSource === "Amazon Title Rule")) amazonSkuOnly++;
-      else amazonStatementOnly++;
+      if (statusText === "Matched Amazon" || statusText === "Matched Amazon by PO") amazonMatched++;
+      else if (statusText === "Amazon SKU-only") amazonSkuOnly++;
+      else if (statusText === "Statement only") amazonStatementOnly++;
     }
   }
 
@@ -770,6 +903,8 @@ function renderTable() {
       <td>${row.orderId}</td>
       <td>${row.statementDate || row.soldDate || ""}</td>
       <td>${row.invoice || '<span class="small">—</span>'}</td>
+      <td>${row.statementPO || '<span class="small">—</span>'}</td>
+      <td>${row.statementMatchType || '<span class="small">—</span>'}</td>
       <td>${row.skus || '<span class="small">—</span>'}</td>
       <td>${row.qty || ""}</td>
       <td>${money(row.sold)}</td>
@@ -831,6 +966,8 @@ function exportCsv() {
     "Order #": r.orderId,
     "Statement Date": r.statementDate,
     "Invoice": r.invoice,
+    "Statement PO": r.statementPO,
+    "Statement Match Type": r.statementMatchType,
     "SKU(s)": r.skus,
     "Qty": r.qty,
     "Sold": r.sold.toFixed(2),
