@@ -9,13 +9,13 @@ const state = {
 const SKU_COST_RULES = {
   "FK032946ESK": 6.13,
   "WWPOFK032946ESK+": 6.34,
-  "R2-QS1S-MLLF": 8.00
+  "R2-QS1S-MLLF": 8.0
 };
 
 const AMAZON_TITLE_COST_RULES = {
   "GM TH350 TRANSMISSION SUPER MAX FILTER K": 6.13,
   "GM TH350 TRANSMISSION SUPER SEAL FILTER": 6.34,
-  "GM TH400 TRANSMISSION SUPER MAX FILTER K": 8.00
+  "GM TH400 TRANSMISSION SUPER MAX FILTER K": 8.0
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -316,6 +316,26 @@ function extractKnownSkusFromText(text) {
   return found;
 }
 
+function getAmazonTitleCost(detailText, qty) {
+  const text = String(detailText || "").toUpperCase();
+
+  for (const [fragment, cost] of Object.entries(AMAZON_TITLE_COST_RULES)) {
+    if (text.includes(fragment.toUpperCase())) {
+      return {
+        matched: true,
+        cost: cost * Math.max(1, qty),
+        fragment
+      };
+    }
+  }
+
+  return {
+    matched: false,
+    cost: 0,
+    fragment: ""
+  };
+}
+
 function buildAmazonMap(records) {
   const map = new Map();
 
@@ -347,7 +367,9 @@ function buildAmazonMap(records) {
         fee: 0,
         shipCost: 0,
         skus: [],
-        skuQtyMap: {}
+        skuQtyMap: {},
+        titleRuleCost: 0,
+        titleRuleMatched: false
       });
     }
 
@@ -373,6 +395,12 @@ function buildAmazonMap(records) {
           matchedSkus.forEach(sku => {
             row.skuQtyMap[sku] = (row.skuQtyMap[sku] || 0) + splitQty;
           });
+        }
+
+        const titleCost = getAmazonTitleCost(detail, qty);
+        if (titleCost.matched) {
+          row.titleRuleCost += titleCost.cost;
+          row.titleRuleMatched = true;
         }
       }
     } else if (txType === "Shipping services purchased through Amazon") {
@@ -534,6 +562,9 @@ function buildMergedRows() {
           if (skuCost.matchedAny) {
             partsCost = skuCost.total;
             costSource = "SKU Rule";
+          } else if (amazon.titleRuleMatched) {
+            partsCost = amazon.titleRuleCost;
+            costSource = "Amazon Title Rule";
           }
         }
       }
@@ -563,7 +594,18 @@ function buildMergedRows() {
     if (includedOrderIds.has(orderId)) continue;
 
     const skuCost = getSkuCostFromSkuQtyMap(amazon.skuQtyMap);
-    if (!skuCost.matchedAny) continue;
+    let partsCost = 0;
+    let costSource = "None";
+
+    if (skuCost.matchedAny) {
+      partsCost = skuCost.total;
+      costSource = "SKU Rule";
+    } else if (amazon.titleRuleMatched) {
+      partsCost = amazon.titleRuleCost;
+      costSource = "Amazon Title Rule";
+    } else {
+      continue;
+    }
 
     rows.push({
       marketplace: "Amazon",
@@ -577,8 +619,8 @@ function buildMergedRows() {
       buyerShip: amazon.buyerShip || 0,
       tax: amazon.tax || 0,
       shipCost: amazon.shipCost || 0,
-      partsCost: skuCost.total,
-      costSource: "SKU Rule",
+      partsCost,
+      costSource,
       fee: amazon.fee || 0
     });
 
@@ -622,7 +664,7 @@ function getStatus(row) {
     if (hasStatement && hasAmazon) {
       return { text: "Matched Amazon", className: "status-all" };
     }
-    if (!hasStatement && hasAmazon && row.costSource === "SKU Rule") {
+    if (!hasStatement && hasAmazon && (row.costSource === "SKU Rule" || row.costSource === "Amazon Title Rule")) {
       return { text: "Amazon SKU-only", className: "status-partial" };
     }
     if (hasAmazon) {
@@ -689,7 +731,7 @@ function renderMatchSummary() {
       const hasStatement = state.statementMap.has(row.orderId);
 
       if (hasAmazon && hasStatement) amazonMatched++;
-      else if (hasAmazon && !hasStatement && row.costSource === "SKU Rule") amazonSkuOnly++;
+      else if (hasAmazon && !hasStatement && (row.costSource === "SKU Rule" || row.costSource === "Amazon Title Rule")) amazonSkuOnly++;
       else amazonStatementOnly++;
     }
   }
